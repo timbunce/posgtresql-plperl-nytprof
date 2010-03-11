@@ -69,7 +69,13 @@ appended to the name. For example F<nytprof.out.54321>.
 You'll get one profile data file for each database connection. You can use the
 C<nytprofmerge> utility to merge multiple data files.
 
+To generate a remort from a data file, use a command like:
+
+  nytprofhtml --file=$PGDATA/nytprof.out.54321 --open
+
 =head1 LIMITATIONS
+
+XXX Currently only PostgreSQL 9.0 is fully supported
 
 =head2 PL/Perl Function Names Are Missing
 
@@ -89,9 +95,9 @@ you need to explicitly call finish_profile() in your plperl code.
 =head2 Can't use plperl and plperlu at the same time
 
 Postgres uses separate Perl interpreters for the plperl and plperlu languages.
-NYTProf is not guaranteed multiplicity safe. It should just profile whichever
-language was used first and ignore the second. It's possible that there may be
-some confusion in the profile though.
+NYTProf is not multiplicity safe (as of version 3.02). It should just profile
+whichever language was used first and ignore the second but at the moment the
+initialization of the second interpreter fails.
 
 =head1 SEE ALSO
 
@@ -111,7 +117,11 @@ at your option, any later version of Perl 5 you may have available.
 
 =cut
 
-use PostgreSQL::PLPerl::Injector qw(inject_plperl_with_names);
+use strict;
+
+use PostgreSQL::PLPerl::Injector qw(
+    inject_plperl_with_names
+);
 
 use Devel::NYTProf::Core;
 
@@ -126,6 +136,82 @@ inject_plperl_with_names(qw(
     DB::disable_profile
     DB::finish_profile
 ));
+
+# load Sub::Name and make Sub::Name::subname available to plperl
+use Sub::Name;
+inject_plperl_with_names('Sub::Name::subname');
+
+my $trace = $ENV{PLPERL_NYTPROF_TRACE} || 0;
+my @on_init;
+my $mkfuncsrc = "PostgreSQL::InServer::mkfuncsrc";
+
+if (defined &{$mkfuncsrc}) {
+    # We were probably loaded via plperlinit.pl
+    fix_mkfuncsrc();
+}
+else {
+    # We were probably loaded via PERL5OPT='-M...' and so we're executing very
+    # early, before mkfuncsrc has even been defined.
+    # So we need to defer wrapping it until later.
+    # We do that by wrapping  PostgreSQL::InServer::Util::bootstrap
+    # But that doesn't exist yet either. Happily it will do a INIT time
+    # so we arrange to wrap it then. Got that?
+    push @on_init, sub {
+        hook_after_sub("PostgreSQL::InServer::Util::bootstrap", \&fix_mkfuncsrc);
+    };
+}
+
+INIT { $_->() for @on_init }
+
+
+sub fix_mkfuncsrc {
+
+    # wrap mkfuncsrc with code that edits the returned code string
+    # such that the code will call Sub::Name::subname to give a name
+    # to the subroutine it defines.
+
+    hook_after_sub("PostgreSQL::InServer::mkfuncsrc", sub {
+        my ($argref, $code) = @_;
+        my $name = $argref->[0];
+
+        # $code = qq[ package main; undef *{'$name'}; *{'$name'} = sub { $BEGIN $prolog $src } ];
+        #$code =~ s/; \s \*\{' (\w+?) '\} \s = \s sub (.*)/; sub $1 $2; warn my \$globref = \\*{'$1'}; \$\$globref;/x
+        #$code =~ s/; \s \*\{' (\w+?) '\} \s = \s sub (.*)/; sub $1 $2; warn my \$globref = *$1\{GLOB}; \$\$globref;/x
+        # XXX escape $name or extract from $code and use single quotes
+        $code =~ s/= \s sub/= Sub::Name::subname qw($name), sub/x
+            or warn "Failed to edit sub name in $code"
+            if $name =~ /^\w+$/; # XXX just sane names for now
+
+        return $code;
+    });
+}
+
+sub hook_after_sub {
+    my ($sub, $code, $force) = @_;
+
+    warn "Wrapping $sub\n" if $trace;
+    my $orig_sub = (defined &{$sub}) && \&{$sub};
+    if (not $orig_sub and not $force) {
+        warn "hook_after_sub: $sub isn't defined\n";
+        return;
+    }
+
+    my $wrapped = sub {
+        warn "Wrapped $sub(@_) called\n" if $trace;
+        my @ret;
+        if ($orig_sub) {
+            # XXX doesn't handle context
+            # XXX the 'package main;' here is a hack to make
+            # PostgreSQL::InServer::Util::bootstrap do the right thing
+            @ret = do { package main; $orig_sub->(@_) };
+        }
+        return $code->( [ @_ ], @ret );
+    };
+
+    no warnings 'redefine';
+    no strict;
+    *{$sub} = $wrapped;
+}
 
 require Devel::NYTProf; # init profiler - do this last
 
