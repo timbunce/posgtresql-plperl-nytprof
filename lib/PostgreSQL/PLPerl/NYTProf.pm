@@ -77,6 +77,11 @@ To generate a remort from a data file, use a command like:
 
 XXX Currently only PostgreSQL 9.0 is fully supported
 
+XXX Needs a not-yet-released version of Sub::Name to get the right details about the subs.
+
+XXX Needs a not-yet-developed version of NYTProf to see the source code of the
+subs (because they are defined by evals).
+
 =head2 PL/Perl Function Names Are Missing
 
 The names of functions defined using CREATE FUNCTION don't show up in
