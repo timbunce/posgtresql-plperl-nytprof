@@ -124,9 +124,7 @@ at your option, any later version of Perl 5 you may have available.
 
 use strict;
 
-use PostgreSQL::PLPerl::Injector qw(
-    inject_plperl_with_names
-);
+#use PostgreSQL::PLPerl::Injector qw( inject_plperl_with_names);
 
 use Devel::NYTProf::Core;
 
@@ -140,11 +138,11 @@ inject_plperl_with_names(qw(
     DB::enable_profile
     DB::disable_profile
     DB::finish_profile
-));
+)) if 0;
 
 # load Sub::Name and make Sub::Name::subname available to plperl
-use Sub::Name;
-inject_plperl_with_names('Sub::Name::subname');
+#use Sub::Name;
+#inject_plperl_with_names('Sub::Name::subname');
 
 my $trace = $ENV{PLPERL_NYTPROF_TRACE} || 0;
 my @on_init;
@@ -177,13 +175,13 @@ sub fix_mkfuncsrc {
 
     hook_after_sub("PostgreSQL::InServer::mkfuncsrc", sub {
         my ($argref, $code) = @_;
-        my $name = $argref->[0];
+        my ($name, $imports, $prolog, $src) = @$argref;
 
-        # $code = qq[ package main; undef *{'$name'}; *{'$name'} = sub { $BEGIN $prolog $src } ];
+        # $code = qq[ package main;  sub { $BEGIN $prolog $src } ];
         #$code =~ s/; \s \*\{' (\w+?) '\} \s = \s sub (.*)/; sub $1 $2; warn my \$globref = \\*{'$1'}; \$\$globref;/x
         #$code =~ s/; \s \*\{' (\w+?) '\} \s = \s sub (.*)/; sub $1 $2; warn my \$globref = *$1\{GLOB}; \$\$globref;/x
         # XXX escape $name or extract from $code and use single quotes
-        $code =~ s/= \s sub/= Sub::Name::subname qw($name), sub/x
+        $code =~ s/\b sub \s {(.*)} \s* $/sub $name { $1 }; \\&$name/sx
             or warn "Failed to edit sub name in $code"
             if $name =~ /^\w+$/; # XXX just sane names for now
 
