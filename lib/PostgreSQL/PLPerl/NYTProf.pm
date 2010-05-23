@@ -8,13 +8,14 @@ PostgreSQL::PLPerl::NYTProf - Profile PostgreSQL PL/Perl functions with Devel::N
 
 =head1 SYNOPSIS
 
-Load via a line in your F<plperlinit.pl> file:
-
-    use PostgreSQL::PLPerl::NYTProf;
-
 Load via the C<PERL5OPT> environment variable:
 
-    $ PERL5OPT='-MPostgreSQL::PLPerl::NYTProf' pg_ctl ...
+    $ PERL5OPT='-MPostgreSQL::PLPerl::NYTProf' pg_ctl restart
+
+or load via your C<postgres.conf> file:
+
+    custom_variable_classes = 'plperl'
+    plperl.on_init = 'use PostgreSQL::PLPerl::NYTProf;'
 
 =head1 DESCRIPTION
 
@@ -25,10 +26,10 @@ Profile PL/Perl functions inside PostgreSQL database with C<Devel::NYTProf>.
 In order to use this module you need to arrange for it to be loaded when
 PostgreSQL initializes a Perl interpreter.
 
-Create a F<plperlinit.pl> file in the same directory as your
+Create a F<plperloninit.pl> file in the same directory as your
 F<postgres.conf> file, if it doesn't exist already.
 
-In the F<plperlinit.pl> file write the code to load this module:
+In the F<plperloninit.pl> file write the code to load this module:
 
     use PostgreSQL::PLPerl::NYTProf;
 
@@ -36,11 +37,13 @@ When it's no longer needed just comment it out by prefixing with a C<#>.
 
 =head2 PostgreSQL 8.x
 
+XXX currently untested
+
 Set the C<PERL5OPT> before starting postgres, to something like this:
 
-    PERL5OPT='-e "require q{plperlinit.pl}"'
+    PERL5OPT='-e "require q{plperloninit.pl}"'
 
-The code in the F<plperlinit.pl> should also include C<delete $ENV{PERL5OPT};>
+The code in the F<plperloninit.pl> should also include C<delete $ENV{PERL5OPT};>
 to avoid any problems with nested invocations of perl, e.g., via a C<plperlu>
 function.
 
@@ -50,12 +53,12 @@ For PostgreSQL 9.0 you can still use the C<PERL5OPT> method described above.
 Alternatively, and preferably, you can use the C<plperl.on_init> configuration
 variable in the F<postgres.conf> file.
 
-    plperl.on_init='require q{plperlinit.pl};'
+    plperl.on_init='require q{plperloninit.pl};'
 
 =head2 Alternative Method
 
 It you're not already using the C<PERL5OPT> environment variable to load a
-F<plperlinit.pl> file, as described above, then you can use it as a quick way
+F<plperloninit.pl> file, as described above, then you can use it as a quick way
 to load the module for ad-hoc use:
 
     $ PERL5OPT='-MPostgreSQL::PLPerl::NYTProf' pg_ctl ...
@@ -67,11 +70,29 @@ directory, alongside your F<postgres.conf>, with the process id of the backend
 appended to the name. For example F<nytprof.out.54321>.
 
 You'll get one profile data file for each database connection. You can use the
-C<nytprofmerge> utility to merge multiple data files.
+C<nytprofmerge> utility to merge multiple data files if needed.
 
 To generate a remort from a data file, use a command like:
 
   nytprofhtml --file=$PGDATA/nytprof.out.54321 --open
+
+=head1 PROFILE ON DEMAND
+
+The instructions above enable profiling for all database sessions that use PL/Perl.
+Instead of profiling all sessions it can be useful to have the profiler loaded
+into the server but only enable it for particular sessions.
+
+You can do this by loading setting the C<NYTPROF> environment variable to
+include the "C<start=no>" option. Then, to enable profiling for a session
+you just need to call the C<DB::enable_profile> function. For example:
+
+    do 'DB::enable_profile' language plperl;
+
+See L<Devel::NYTProf/"RUN-TIME CONTROL OF PROFILING">.
+
+The performance impact of loading but not enabling NYTProf should be I<very>
+low (though I've not tried measuring it). So, while I wouldn't recommend doing
+that on a production instance, it would be fine on a development instance.
 
 =head1 LIMITATIONS
 
@@ -81,15 +102,6 @@ XXX Needs a not-yet-released version of Sub::Name to get the right details about
 
 XXX Needs a not-yet-developed version of NYTProf to see the source code of the
 subs (because they are defined by evals).
-
-=head2 PL/Perl Function Names Are Missing
-
-The names of functions defined using CREATE FUNCTION don't show up in
-NYTProf because they're compiled as anonymous subs using a string eval.
-There's no easy way to determine the PL/Perl function name because it's only
-known to the postgres internals.
-
-XXX a workaround is being developed.
 
 =head2 For PostgreSQL 8 an explicit call to DB::finish_profile is needed
 
@@ -134,22 +146,22 @@ DB::set_option("savesrc", 1);
 DB::set_option("addpid", 1);
 # file defaults to nytprof.out.$pid in $PGDATA directory
 
+# give the 'application' a more user-friendly name
+$0 = "PostgreSQL Session" if $0 eq '-e';
+
 inject_plperl_with_names(qw(
     DB::enable_profile
     DB::disable_profile
     DB::finish_profile
 )) if 0;
 
-# load Sub::Name and make Sub::Name::subname available to plperl
-#use Sub::Name;
-#inject_plperl_with_names('Sub::Name::subname');
 
 my $trace = $ENV{PLPERL_NYTPROF_TRACE} || 0;
 my @on_init;
 my $mkfuncsrc = "PostgreSQL::InServer::mkfuncsrc";
 
 if (defined &{$mkfuncsrc}) {
-    # We were probably loaded via plperlinit.pl
+    # We were probably loaded via plperloninit.pl
     fix_mkfuncsrc();
 }
 else {
@@ -178,11 +190,9 @@ sub fix_mkfuncsrc {
         my ($name, $imports, $prolog, $src) = @$argref;
 
         # $code = qq[ package main;  sub { $BEGIN $prolog $src } ];
-        #$code =~ s/; \s \*\{' (\w+?) '\} \s = \s sub (.*)/; sub $1 $2; warn my \$globref = \\*{'$1'}; \$\$globref;/x
-        #$code =~ s/; \s \*\{' (\w+?) '\} \s = \s sub (.*)/; sub $1 $2; warn my \$globref = *$1\{GLOB}; \$\$globref;/x
         # XXX escape $name or extract from $code and use single quotes
-        $code =~ s/\b sub \s {(.*)} \s* $/sub $name { $1 }; \\&$name/sx
-            or warn "Failed to edit sub name in $code"
+        $code =~ s/\b sub \s* {(.*)} \s* $/sub $name { $1 }; \\&$name/sx
+                or warn "Failed to edit sub name in $code"
             if $name =~ /^\w+$/; # XXX just sane names for now
 
         return $code;
