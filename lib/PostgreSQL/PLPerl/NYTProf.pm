@@ -82,6 +82,12 @@ To generate a report from a data file, use a command like:
 
   nytprofhtml --file=$PGDATA/nytprof.out.54321 --open
 
+=head1 INTERPRETING REPORTS
+
+PL/Perl functions are given names in perl that include the OID of the PL/Perl
+function. So a function created by C<CREATE FUNCTION foo () ...> would appear
+in the reports as something like C<main::foo__3762>.
+
 =head1 PROFILE ON DEMAND
 
 The instructions above enable profiling for all database sessions that use PL/Perl.
@@ -108,6 +114,12 @@ Postgres uses separate Perl interpreters for the plperl and plperlu languages.
 NYTProf is not multiplicity safe (as of version 4.05). It should just profile
 whichever language was used first and ignore the other, but there may still be
 problems in this situation. Let me know if you encounter any odd behaviour.
+
+=head2 PL/Perl functions with unusual names are __ANON__
+
+PL/Perl functions are created as anonymous subroutines in Perl.
+PostgreSQL::PLPerl::NYTProf arranges for them to be given names.
+The logic currently only works for names that match C</^\w+$/>.
 
 =head1 SEE ALSO
 
@@ -216,9 +228,9 @@ sub hook_after_sub {
 # give the 'application' a more user-friendly name
 $0 = "PostgreSQL Session" if $0 eq '-e';
 
-eval q{ INIT { $_->() for @on_init } } or die
+eval q{ INIT { $_->() for @on_init }; 1 } or die
     if @on_init;
 
-require Devel::NYTProf; # init profiler - do this last
+require Devel::NYTProf; # init profiler - DO THIS LAST
 
 __END__
