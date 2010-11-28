@@ -17,51 +17,57 @@ or load via your C<postgres.conf> file:
     custom_variable_classes = 'plperl'
     plperl.on_init = 'use PostgreSQL::PLPerl::NYTProf;'
 
+and restart the server.
+
+Then run some PL/Perl code:
+
+    $ psql -c "do 'sub w { } w() for 1..100_000' language plperl" template1
+
+which will create a nytprof.out.I<PID> file in the C<$PGDATA> directory,
+where I<PID> is the process id of the postgres backend.
+
+Finally, run C<nytprofhtml> to generate a report, for example:
+
+    $ nytprofhtml --file $PGDATA/nytprof.out.54321 --open
+
 =head1 DESCRIPTION
 
-Profile PL/Perl functions inside PostgreSQL database with C<Devel::NYTProf>. 
+Profile PL/Perl functions inside PostgreSQL database with L<Devel::NYTProf>. 
+
+PostgreSQL 9.0 or later is required.
 
 =head1 ENABLING
 
 In order to use this module you need to arrange for it to be loaded when
 PostgreSQL initializes a Perl interpreter.
 
-Create a F<plperloninit.pl> file in the same directory as your
-F<postgres.conf> file, if it doesn't exist already.
+=head2 Quick Occasional Use
 
-In the F<plperloninit.pl> file write the code to load this module:
+The C<PERL5OPT> environment variable can be used like this:
+
+    $ PERL5OPT='-MPostgreSQL::PLPerl::NYTProf' pg_ctl restart
+
+This will be effective for any pg_ctl command that restarts the postmaster
+process, so C<restart> will work but C<reload> won't.
+
+The profiler will remain enabled until the the postmaster process is restarted.
+
+=head2 Via postgres.conf
+
+You can simply add a C<use> statement to your F<postgres.conf> file:
+
+    plperl.on_init='use PostgreSQL::PLPerl::NYTProf;'
+
+though I'd recommend arranging for PostgreSQL to load a separate
+F<plperloninit.pl> file from same directory as your F<postgres.conf> file:
+
+    plperl.on_init='require "plperloninit.pl";'
+
+then you can put whatever Perl statements you want in that file:
 
     use PostgreSQL::PLPerl::NYTProf;
 
 When it's no longer needed just comment it out by prefixing with a C<#>.
-
-=head2 PostgreSQL 8.x
-
-XXX currently untested
-
-Set the C<PERL5OPT> before starting postgres, to something like this:
-
-    PERL5OPT='-e "require q{plperloninit.pl}"'
-
-The code in the F<plperloninit.pl> should also include C<delete $ENV{PERL5OPT};>
-to avoid any problems with nested invocations of perl, e.g., via a C<plperlu>
-function.
-
-=head2 PostgreSQL 9.0
-
-For PostgreSQL 9.0 you can still use the C<PERL5OPT> method described above.
-Alternatively, and preferably, you can use the C<plperl.on_init> configuration
-variable in the F<postgres.conf> file.
-
-    plperl.on_init='require q{plperloninit.pl};'
-
-=head2 Alternative Method
-
-It you're not already using the C<PERL5OPT> environment variable to load a
-F<plperloninit.pl> file, as described above, then you can use it as a quick way
-to load the module for ad-hoc use:
-
-    $ PERL5OPT='-MPostgreSQL::PLPerl::NYTProf' pg_ctl ...
 
 =head1 USAGE
 
@@ -70,9 +76,9 @@ directory, alongside your F<postgres.conf>, with the process id of the backend
 appended to the name. For example F<nytprof.out.54321>.
 
 You'll get one profile data file for each database connection. You can use the
-C<nytprofmerge> utility to merge multiple data files if needed.
+L<nytprofmerge> utility to merge multiple data files if needed.
 
-To generate a remort from a data file, use a command like:
+To generate a report from a data file, use a command like:
 
   nytprofhtml --file=$PGDATA/nytprof.out.54321 --open
 
@@ -83,8 +89,8 @@ Instead of profiling all sessions it can be useful to have the profiler loaded
 into the server but only enable it for particular sessions.
 
 You can do this by loading setting the C<NYTPROF> environment variable to
-include the "C<start=no>" option. Then, to enable profiling for a session
-you just need to call the C<DB::enable_profile> function. For example:
+include the "C<start=no>" option. Then, to enable profiling for a particular
+session you just need to call the C<DB::enable_profile> function. For example:
 
     do 'DB::enable_profile' language plperl;
 
@@ -96,25 +102,12 @@ that on a production instance, it would be fine on a development instance.
 
 =head1 LIMITATIONS
 
-XXX Currently only PostgreSQL 9.0 is fully supported
-
-XXX Needs a not-yet-released version of Sub::Name to get the right details about the subs.
-
-XXX Needs a not-yet-developed version of NYTProf to see the source code of the
-subs (because they are defined by evals).
-
-=head2 For PostgreSQL 8 an explicit call to DB::finish_profile is needed
-
-Postgres 8 doesn't execute END blocks when it shuts down, so NYTProf
-doesn't get a chance to terminate the profile cleanly. To get a usable profile
-you need to explicitly call finish_profile() in your plperl code.
-
 =head2 Can't use plperl and plperlu at the same time
 
 Postgres uses separate Perl interpreters for the plperl and plperlu languages.
-NYTProf is not multiplicity safe (as of version 3.02). It should just profile
-whichever language was used first and ignore the second but at the moment the
-initialization of the second interpreter fails.
+NYTProf is not multiplicity safe (as of version 4.05). It should just profile
+whichever language was used first and ignore the other, but there may still be
+problems in this situation. Let me know if you encounter any odd behaviour.
 
 =head1 SEE ALSO
 
@@ -126,7 +119,7 @@ B<Tim Bunce>, L<http://www.tim.bunce.name> and L<http://blog.timbunce.org>
 
 =head1 COPYRIGHT AND LICENSE
 
-  Copyright (C) 2009 by Tim Bunce.
+  Copyright (C) 2009-2010 by Tim Bunce.
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.8.8 or,
@@ -136,8 +129,6 @@ at your option, any later version of Perl 5 you may have available.
 
 use strict;
 
-#use PostgreSQL::PLPerl::Injector qw( inject_plperl_with_names);
-
 use Devel::NYTProf::Core;
 
 # set some default options (can be overridden via NYTPROF env var)
@@ -146,21 +137,16 @@ DB::set_option("savesrc", 1);
 DB::set_option("addpid", 1);
 # file defaults to nytprof.out.$pid in $PGDATA directory
 
-# give the 'application' a more user-friendly name
-$0 = "PostgreSQL Session" if $0 eq '-e';
-
-inject_plperl_with_names(qw(
-    DB::enable_profile
-    DB::disable_profile
-    DB::finish_profile
-)) if 0;
-
-
 my $trace = $ENV{PLPERL_NYTPROF_TRACE} || 0;
 my @on_init;
 my $mkfuncsrc = "PostgreSQL::InServer::mkfuncsrc";
 
-if (defined &{$mkfuncsrc}) {
+if (not -f 'postgres.conf') {
+    # there's no easy way to tell that we're being loaded into the
+    # postgres server when we're loaded via PERL5OPT. This'll do:
+    warn __PACKAGE__." not running in postgres server";
+}
+elsif (defined &{$mkfuncsrc}) {
     # We were probably loaded via plperloninit.pl
     fix_mkfuncsrc();
 }
@@ -176,14 +162,11 @@ else {
     };
 }
 
-INIT { $_->() for @on_init }
-
 
 sub fix_mkfuncsrc {
 
     # wrap mkfuncsrc with code that edits the returned code string
-    # such that the code will call Sub::Name::subname to give a name
-    # to the subroutine it defines.
+    # such that the code will give a name to the subroutine it defines.
 
     hook_after_sub("PostgreSQL::InServer::mkfuncsrc", sub {
         my ($argref, $code) = @_;
@@ -198,6 +181,7 @@ sub fix_mkfuncsrc {
         return $code;
     });
 }
+
 
 sub hook_after_sub {
     my ($sub, $code, $force) = @_;
@@ -225,6 +209,15 @@ sub hook_after_sub {
     no strict;
     *{$sub} = $wrapped;
 }
+
+
+# --- final initialization ---
+
+# give the 'application' a more user-friendly name
+$0 = "PostgreSQL Session" if $0 eq '-e';
+
+eval q{ INIT { $_->() for @on_init } } or die
+    if @on_init;
 
 require Devel::NYTProf; # init profiler - do this last
 
