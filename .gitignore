@@ -1,2 +1,5 @@
 PostgreSQL-PLPerl-NYTProf-*
 .build
+nytprof
+nytprof.out
+nytprof.out.*
